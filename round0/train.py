@@ -6,7 +6,6 @@ from typing import Any, Dict
 import random  
 from collections import defaultdict
 
-
 # 환경 정의
 FLOOR = 100   
 WALL = 250    
