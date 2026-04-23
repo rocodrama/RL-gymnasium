@@ -288,7 +288,7 @@ def train():
     print("학습 완료: round_0.pkl 저장")
     
 def run():
-    agent = Round0Agent.load("round_0.pkl")
+    agent = Round0Agent.load("round0_agent.pkl")
     
     kym.evaluate(
         env_id='kymnasium/GridWorld-Crossing-26x26',    
