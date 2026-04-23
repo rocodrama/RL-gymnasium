@@ -152,17 +152,7 @@ class TrainConfig:
     hard_focus_episode: int = 35000
     hard_focus_missing_penalty_scale: float = 1.10
     full_color_terminal_bonus: float = 240.0
-    model_path: str = "round_submit.pkl"
-
-
-def turn_left(direction: int) -> int:
-    """현재 방향 기준으로 좌회전한 방향 인덱스를 반환한다."""
-    return [DIR_DOWN, DIR_LEFT, DIR_UP, DIR_RIGHT][direction]
-
-
-def turn_right(direction: int) -> int:
-    """현재 방향 기준으로 우회전한 방향 인덱스를 반환한다."""
-    return [DIR_UP, DIR_RIGHT, DIR_DOWN, DIR_LEFT][direction]
+    model_path: str = "round1_agent.pkl"
 
 
 def forward_delta(direction: int) -> Tuple[int, int]:
@@ -332,31 +322,6 @@ def build_distance_map(grid: np.ndarray, goal: Tuple[int, int]) -> np.ndarray:
     return dist_map
 
 
-def extract_static_layout():
-    """환경을 1회 리셋해 고정 레이아웃 정보를 추출한다."""
-    env = gym.make(
-        id="kymnasium/ZeldaAdventure-Stage-3",
-        render_mode=None,
-        bgm=False,
-    )
-    obs, _ = env.reset()
-    env.close()
-
-    tiles = np.asarray(obs["tiles"])
-    static_grid, goal_pos, cloud_positions, sword_map, monster_map = build_static_layout_from_tiles(tiles)
-    link_x, link_y, sword, direction = map(int, obs["link"])
-
-    return (
-        static_grid,
-        (link_x, link_y),
-        direction,
-        goal_pos,
-        cloud_positions,
-        sword_map,
-        monster_map,
-    )
-
-
 def get_attack_reward(monster_obj: int, monster_color: int, sword_color: int) -> float:
     """몬스터 처치 시 무기/속성 일치 여부에 따른 보상을 반환한다."""
     if sword_color == 0:
@@ -474,272 +439,6 @@ def pick_by_priority(indices):
         if idx in indices:
             return idx
     return indices[0]
-
-
-class FastZeldaMonsterEnv:
-    """학습 가속용 내부 시뮬레이터(FastEnv)."""
-    def __init__(
-        self,
-        static_grid: np.ndarray,
-        start_pos: Tuple[int, int],
-        start_dir: int,
-        goal_pos: Tuple[int, int],
-        cloud_positions: set[Tuple[int, int]],
-        sword_map: Dict[Tuple[int, int], int],
-        monster_map: Dict[Tuple[int, int], Tuple[int, int]],
-        max_steps: int,
-    ):
-        self.static_grid = static_grid.astype(np.int8, copy=True)
-        self.start_pos = start_pos
-        self.start_dir = start_dir
-        self.goal_pos = goal_pos
-        self.cloud_positions = set(cloud_positions)
-        self.initial_sword_map = dict(sword_map)
-        self.all_sword_colors = set(self.initial_sword_map.values())
-        self.target_sword_color_num = len(self.all_sword_colors)
-        self.initial_monster_map = dict(monster_map)
-        self.max_steps = max_steps
-
-        self.x = start_pos[0]
-        self.y = start_pos[1]
-        self.direction = start_dir
-        self.sword = 0
-        self.current_sword_used = True
-        self.steps = 0
-
-        self.sword_map: Dict[Tuple[int, int], int] = {}
-        self.monster_map: Dict[Tuple[int, int], Tuple[int, int]] = {}
-        self.monster_progress: Dict[Tuple[int, int], Tuple[int, int]] = {}
-        self.collected_sword_colors: set[int] = set()
-        self.dropped_sword_positions: set[Tuple[int, int]] = set()
-        self.current_dist_map: np.ndarray | None = None
-
-    def build_current_block_grid(self) -> np.ndarray:
-        grid = self.static_grid.copy()
-        for (mx, my), (_, monster_color) in self.monster_map.items():
-            # 거리 shaping 계산에서는
-            # 현재 검과 같은 색 몬스터를 통과 가능 타일로 본다.
-            if self.sword != 0 and monster_color == self.sword:
-                continue
-            grid[mx, my] = WALL
-        return grid
-
-    def rebuild_distance_map(self):
-        self.current_dist_map = build_distance_map(self.build_current_block_grid(), self.goal_pos)
-
-    def reset(self):
-        self.x = self.start_pos[0]
-        self.y = self.start_pos[1]
-        self.direction = self.start_dir
-        self.sword = 0
-        self.current_sword_used = True
-        self.steps = 0
-        self.sword_map = dict(self.initial_sword_map)
-        self.monster_map = dict(self.initial_monster_map)
-        self.monster_progress = {}
-        self.collected_sword_colors = set()
-        self.dropped_sword_positions = set()
-        self.rebuild_distance_map()
-        return self.get_state(), {}
-
-    def current_pos(self) -> Tuple[int, int]:
-        return self.x, self.y
-
-    def current_tile_sword_color(self) -> int:
-        if (self.x, self.y) in self.dropped_sword_positions:
-            return 0
-        return self.sword_map.get((self.x, self.y), 0)
-
-    def current_cloud_attr(self) -> int:
-        return CLOUD_PATTERN[self.steps % len(CLOUD_PATTERN)]
-
-    def is_cloud_at(self, x: int, y: int) -> bool:
-        return (x, y) in self.cloud_positions
-
-    def nearest_unseen_sword_distance(self) -> int:
-        best = 10**9
-        for (sx, sy), sword_color in self.sword_map.items():
-            if (sx, sy) in self.dropped_sword_positions:
-                continue
-            if sword_color in self.collected_sword_colors:
-                continue
-            d = abs(sx - self.x) + abs(sy - self.y)
-            if d < best:
-                best = d
-        return -1 if best == 10**9 else best
-
-    def front_info_for_direction(self, direction: int) -> Tuple[int, int]:
-        dx, dy = forward_delta(direction)
-        nx, ny = self.x + dx, self.y + dy
-
-        if extract_cell(self.static_grid, nx, ny) == WALL:
-            return FRONT_WALL, 0
-
-        if self.is_cloud_at(nx, ny):
-            attr = self.current_cloud_attr()
-            if is_cloud_blocked(attr):
-                return FRONT_CLOUD_BLOCKED, attr
-
-        if (nx, ny) in self.monster_map:
-            monster_obj, monster_color = self.monster_map[(nx, ny)]
-            return monster_obj_to_front_type(monster_obj), monster_color
-
-        if (nx, ny) in self.sword_map and (nx, ny) not in self.dropped_sword_positions:
-            sword_color = self.sword_map[(nx, ny)]
-            return FRONT_SWORD, sword_color
-
-        return FRONT_OPEN, 0
-
-    def front_info(self) -> Tuple[int, int]:
-        return self.front_info_for_direction(self.direction)
-
-    def get_state(self):
-        front_type, front_attr = self.front_info()
-        current_tile_sword = self.current_tile_sword_color()
-        current_has_sword = 1 if current_tile_sword != 0 else 0
-        sword_color_num = len(self.collected_sword_colors)
-        current_sword_used = 1 if self.current_sword_used else 0
-
-        return build_state(
-            x=self.x,
-            y=self.y,
-            direction=self.direction,
-            sword=self.sword,
-            goal_pos=self.goal_pos,
-            front_type=front_type,
-            front_attr=front_attr,
-            current_has_sword=current_has_sword,
-            current_tile_sword=current_tile_sword,
-            sword_color_num=sword_color_num,
-            current_sword_used=current_sword_used,
-        )
-
-    def step(self, action: int):
-        self.steps += 1
-        reward_bonus = 0.0
-        monster_killed = False
-        sword_state_changed = False
-
-        dx, dy = forward_delta(self.direction)
-        nx, ny = self.x + dx, self.y + dy
-        front_type, front_attr = self.front_info()
-
-        if action == ACTION_STOP:
-            pass
-
-        elif action == ACTION_TURN_LEFT:
-            self.direction = turn_left(self.direction)
-
-        elif action == ACTION_TURN_RIGHT:
-            self.direction = turn_right(self.direction)
-
-        elif action == ACTION_FORWARD:
-            blocked = front_type in (
-                FRONT_WALL,
-                FRONT_CLOUD_BLOCKED,
-                FRONT_TURTLENACK,
-                FRONT_KEESE,
-                FRONT_MOBLIN,
-                FRONT_ARMOS,
-            )
-            if not blocked:
-                self.x, self.y = nx, ny
-
-        elif action == ACTION_PICKUP:
-            current_pos = (self.x, self.y)
-            current_sword = self.sword_map.get(current_pos)
-            if current_pos in self.dropped_sword_positions:
-                current_sword = None
-            if current_sword is not None:
-                is_new_color = current_sword not in self.collected_sword_colors
-                if self.sword == 0:
-                    self.sword = current_sword
-                    self.current_sword_used = False
-                    sword_state_changed = True
-                    self.sword_map.pop(current_pos, None)
-                    reward_bonus += 5.0
-                elif self.sword != current_sword:
-                    can_force_swap_new_color = (not self.current_sword_used) and is_new_color
-                    if not self.current_sword_used and not can_force_swap_new_color:
-                        reward_bonus -= SWAP_BEFORE_USE_PENALTY
-                    else:
-                        old_sword = self.sword
-                        self.sword = current_sword
-                        self.current_sword_used = False
-                        sword_state_changed = True
-                        self.sword_map[current_pos] = old_sword
-                        reward_bonus += 2.0
-                        if can_force_swap_new_color:
-                            # 기본은 "사용 후 교체"를 유지하되,
-                            # 3색 고착을 막기 위해 새 색 검 교체를 예외 허용한다.
-                            reward_bonus -= SWAP_BEFORE_USE_PENALTY * 0.5
-                self.collected_sword_colors.add(self.sword)
-                if is_new_color:
-                    reward_bonus += NEW_COLOR_PICKUP_BONUS
-
-        elif action == ACTION_DROP:
-            # Drop은 "앞 칸 다른 검과 교체" 준비 상황에서만 허용한다.
-            can_drop_for_swap = (
-                self.sword != 0
-                and self.current_sword_used
-                and (self.x, self.y) not in self.sword_map
-                and front_type == FRONT_SWORD
-                and front_attr != self.sword
-            )
-            if can_drop_for_swap:
-                self.sword_map[(self.x, self.y)] = self.sword
-                self.dropped_sword_positions.add((self.x, self.y))
-                self.sword = 0
-                self.current_sword_used = True
-                sword_state_changed = True
-                reward_bonus += 0.5
-
-        elif action == ACTION_ATTACK:
-            if self.sword == 0:
-                reward_bonus -= BARE_HAND_ATTACK_PENALTY
-            elif front_type in (FRONT_TURTLENACK, FRONT_KEESE, FRONT_MOBLIN, FRONT_ARMOS):
-                monster_obj, monster_color = self.monster_map[(nx, ny)]
-                req = required_hits(monster_obj, monster_color, self.sword)
-
-                if req < INF_HITS:
-                    last_sword, hit_count = self.monster_progress.get((nx, ny), (-1, 0))
-
-                    if last_sword != self.sword:
-                        hit_count = 0
-
-                    hit_count += 1
-                    self.monster_progress[(nx, ny)] = (self.sword, hit_count)
-                    if not self.current_sword_used:
-                        self.current_sword_used = True
-                        reward_bonus += FIRST_USE_HIT_REWARD
-
-                    if hit_count >= req:
-                        self.monster_map.pop((nx, ny), None)
-                        self.monster_progress.pop((nx, ny), None)
-                        reward_bonus += get_attack_reward(monster_obj, monster_color, self.sword)
-                        monster_killed = True
-                else:
-                    reward_bonus -= 0.35
-            else:
-                reward_bonus -= 0.35
-
-        if monster_killed or sword_state_changed:
-            self.rebuild_distance_map()
-
-        terminated = (self.x, self.y) == self.goal_pos
-        truncated = self.steps >= self.max_steps
-
-        return self.get_state(), reward_bonus, terminated, truncated, {
-            "monster_killed": monster_killed
-        }
-
-    def is_useful_attack(self, front_type: int, front_attr: int) -> bool:
-        if self.sword == 0:
-            return False
-        if front_type not in (FRONT_TURTLENACK, FRONT_KEESE, FRONT_MOBLIN, FRONT_ARMOS):
-            return False
-        monster_obj = front_type_to_monster_obj(front_type)
-        return required_hits(monster_obj, front_attr, self.sword) < INF_HITS
 
 
 class FinalEvalAgent(kym.Agent):
@@ -1208,7 +907,7 @@ def train(config: TrainConfig = TrainConfig()):
                 elif front_type == FRONT_ARMOS:
                     reward -= 0.20
 
-            # 실제 환경 스텝 결과로부터 FastEnv 보조 보상(env_bonus)을 재구성한다.
+            # 실제 환경 스텝 결과를 바탕으로 보조 보상(env_bonus)을 계산한다.
             env_bonus = 0.0
             if action_idx == IDX_PICKUP:
                 is_new_color = new_sword != 0 and new_sword not in old_collected_colors
@@ -1367,7 +1066,7 @@ def run(model_path: str = "round1_agent.pkl"):
 
 
 if __name__ == "__main__":
-    # train()
-    run()  
+    train()
+    # run()  
 
 

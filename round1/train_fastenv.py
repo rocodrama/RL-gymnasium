@@ -152,7 +152,7 @@ class TrainConfig:
     hard_focus_episode: int = 35000
     hard_focus_missing_penalty_scale: float = 1.10
     full_color_terminal_bonus: float = 240.0
-    model_path: str = "round_final.pkl"
+    model_path: str = "round1_final.pkl"
 
 
 def turn_left(direction: int) -> int:
@@ -1255,7 +1255,7 @@ def train(config: TrainConfig = TrainConfig()):
     print(f"training done: {config.model_path}")
 
 
-def run(model_path: str = "round8_adaptive_reheat.pkl"):
+def run(model_path: str = "round1_final.pkl"):
     """학습된 모델을 로드해 공식 평가 환경으로 실행한다."""
     agent = FinalEvalAgent.load(model_path)
     kym.evaluate(
@@ -1267,6 +1267,6 @@ def run(model_path: str = "round8_adaptive_reheat.pkl"):
 
 if __name__ == "__main__":
     # train()
-    run()  # 학습 대신 평가만 실행하려면 이 줄을 사용
+    run()  
 
 
