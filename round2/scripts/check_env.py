@@ -1,82 +1,56 @@
-"""
-학습 전에 Avoid Blurp 환경의 observation, action, info 구조를 확인하는 스크립트입니다.
-
-프로젝트 루트에서 실행:
-    python scripts/check_env.py
-"""
-
-from __future__ import annotations
-
-import argparse
-from typing import Any, Dict
-
 import gymnasium as gym
-import kymnasium  # noqa: F401 - kymnasium 환경 등록을 위해 import합니다.
+import kymnasium
 import numpy as np
+import pygame
+import time
 
+env = gym.make(
+    id="kymnasium/AvoidBlurp-Discrete-Ballistic-Normal-Stage-1",
+    render_mode="human",
+    bgm=False,
+)
 
-ENV_ID = "kymnasium/AvoidBlurp-Discrete-Ballistic-Normal-Stage-1"
+obs, info = env.reset()
 
+prev_blurps = None
+step = 0
 
-def describe_observation(observation: Dict[str, Any]) -> None:
-    mario = np.asarray(observation.get("mario", []), dtype=np.float32)
-    blurps = np.asarray(observation.get("blurps", []), dtype=np.float32)
-    visible_blurps = 0
+while True:
+    action = 0
 
-    if blurps.ndim == 2:
-        visible_blurps = int(np.sum(~np.all(np.isclose(blurps, 0.0), axis=1)))
+    # pygame 이벤트 처리 필수
+    pygame.event.pump()
+    keys = pygame.key.get_pressed()
 
-    print("observation keys:", sorted(observation.keys()))
-    print("mario shape:", mario.shape, "values:", mario.tolist())
-    print("blurps shape:", blurps.shape, "visible rows:", visible_blurps)
+    if keys[pygame.K_LEFT]:
+        action = 1
+    elif keys[pygame.K_RIGHT]:
+        action = 2
 
-    if blurps.ndim == 2 and blurps.shape[0] > 0:
-        print("first blurp row:", blurps[0].tolist())
+    obs, reward, terminated, truncated, info = env.step(action)
 
+    blurps = np.asarray(obs["blurps"], dtype=np.float32)
+    mario = np.asarray(obs["mario"], dtype=np.float32)
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--steps", type=int, default=20)
-    parser.add_argument("--render-mode", default=None)
-    parser.add_argument("--bgm", action="store_true")
-    args = parser.parse_args()
+    active = np.any(blurps != 0, axis=1)
+    active_blurps = blurps[active]
 
-    env = gym.make(
-        id=ENV_ID,
-        render_mode=args.render_mode,
-        bgm=args.bgm,
-    )
+    if step % 10 == 0:
+        print("\n" + "=" * 60)
+        print("step:", step, "action:", action, "time:", info.get("time_elapsed"))
+        print("mario:", mario)
 
-    try:
-        observation, info = env.reset()
-        print("env id:", ENV_ID)
-        print("action space:", env.action_space)
-        print("observation space:", env.observation_space)
-        print("reset info:", info)
-        describe_observation(observation)
+        print("\nactive blurps:", len(active_blurps))
+        for i, b in enumerate(active_blurps[:5]):
+            cx = (b[0] + b[2]) / 2
+            cy = (b[1] + b[3]) / 2
+            print(f"{i}: raw={b}, center=({cx:.1f}, {cy:.1f})")
 
-        previous_time = float(info.get("time_elapsed", 0.0) or 0.0)
-        for step in range(1, args.steps + 1):
-            action = int(env.action_space.sample())
-            observation, reward, terminated, truncated, info = env.step(action)
-            current_time = float(info.get("time_elapsed", previous_time) or previous_time)
-            print(
-                f"step={step:03d} "
-                f"action={action} "
-                f"reward={reward} "
-                f"time={current_time:.4f} "
-                f"delta={current_time - previous_time:.4f} "
-                f"terminated={terminated} "
-                f"truncated={truncated}"
-            )
-            previous_time = current_time
+        print("=" * 60)
 
-            if terminated or truncated:
-                print("episode ended during inspection")
-                break
-    finally:
-        env.close()
+    if terminated or truncated:
+        print("episode end:", "terminated=", terminated, "truncated=", truncated)
+        obs, info = env.reset()
 
-
-if __name__ == "__main__":
-    main()
+    step += 1
+    time.sleep(1 / 30)
