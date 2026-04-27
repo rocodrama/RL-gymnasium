@@ -4,6 +4,7 @@
 
 - [ ] Python 버전이 `3.12.x`인지 확인
 - [ ] `kymnasium`, `gymnasium`, `numpy`, `torch` 설치 확인
+- [ ] `python scripts/check_cuda.py`로 CUDA 인식 상태 확인
 - [ ] `python scripts/check_env.py` 실행 가능 여부 확인
 - [ ] `render_mode=None`, `bgm=False`로 환경 생성 가능 여부 확인
 
@@ -32,4 +33,5 @@
 - [ ] `act(observation, info)`가 항상 `int` action을 반환하는지 확인
 - [ ] 평가 코드에서 환경 수정 없이 실행되는지 확인
 - [ ] 학습 시작 시 `CUDA available: True`가 출력되는지 확인
+- [ ] `CUDA_VISIBLE_DEVICES=2 python scripts/check_cuda.py`에서 `torch.cuda.device_count()`가 1 이상인지 확인
 - [ ] vectorized env가 `num_envs=8`로 생성되는지 확인

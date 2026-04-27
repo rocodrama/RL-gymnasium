@@ -100,8 +100,19 @@ observation은 다음 딕셔너리 형태입니다.
 
 - 학습: `python src/train_v1.py`
 - 환경 점검: `python scripts/check_env.py`
+- CUDA 점검: `python scripts/check_cuda.py`
 - 환경 점검 체크리스트: `scripts/checklist.md`
 - 학습 결과 모델: `avoid_blurp_dqn.pt`
+
+CUDA가 보이지 않을 때는 먼저 아래를 확인합니다.
+
+```bash
+nvidia-smi -L
+python scripts/check_cuda.py
+CUDA_VISIBLE_DEVICES=2 python scripts/check_cuda.py
+```
+
+`CUDA_VISIBLE_DEVICES=2`를 사용하면 PyTorch 안에서는 해당 물리 GPU가 보통 `cuda:0`으로 다시 매핑됩니다. 이 상태에서 `torch.cuda.device_count()`가 `0`이면, 물리 GPU 번호가 다르거나 현재 쉘/conda 환경에서 NVIDIA 드라이버를 접근하지 못하는 상태입니다.
 
 ## 11. 평가 실행 예시
 
@@ -130,6 +141,7 @@ kym.evaluate(
 - 생존 시간과 위험 거리 기반 reward shaping 적용
 - Target Network, Replay Buffer, epsilon decay, Huber loss, gradient clipping 적용
 - CUDA 자동 감지 및 GPU 학습 지원
+- CUDA가 보이지 않으면 CPU로 학습하지 않고 즉시 오류 출력
 - `AsyncVectorEnv`로 여러 환경 transition을 동시에 수집
 - replay buffer가 충분히 쌓인 뒤 GPU에서 큰 batch로 DQN 업데이트
 - 학습은 `render_mode=None`, `bgm=False`로 수행

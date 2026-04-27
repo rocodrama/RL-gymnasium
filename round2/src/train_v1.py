@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import random
+import os
 from collections import deque
 from dataclasses import dataclass
 from functools import partial
@@ -39,6 +40,7 @@ TRAIN_RENDER_MODE = None
 TRAIN_BGM = False
 NUM_ENVS = 8
 USE_ASYNC_VECTOR_ENV = True
+REQUIRE_CUDA_FOR_TRAINING = True
 
 
 # ===============
@@ -120,7 +122,14 @@ def get_device() -> torch.device:
 def print_device_info(device: torch.device) -> None:
     cuda_available = torch.cuda.is_available()
     device_name = torch.cuda.get_device_name(0) if cuda_available else "CPU"
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "<not set>")
+
+    print(f"Python executable: {os.sys.executable}")
+    print(f"PyTorch version: {torch.__version__}")
+    print(f"PyTorch CUDA build: {torch.version.cuda}")
+    print(f"CUDA_VISIBLE_DEVICES: {visible_devices}")
     print(f"CUDA available: {cuda_available}")
+    print(f"CUDA device count: {torch.cuda.device_count()}")
     print(f"PyTorch device: {device} ({device_name})")
 
     if cuda_available:
@@ -128,6 +137,20 @@ def print_device_info(device: torch.device) -> None:
             torch.set_float32_matmul_precision("high")
         except Exception:
             pass
+    else:
+        print(
+            "CUDA가 보이지 않습니다. CUDA_VISIBLE_DEVICES 값이 실제 GPU 번호와 맞는지, "
+            "`nvidia-smi -L`과 `python scripts/check_cuda.py`로 확인하세요."
+        )
+
+
+def require_cuda_if_needed(device: torch.device) -> None:
+    if REQUIRE_CUDA_FOR_TRAINING and device.type != "cuda":
+        raise RuntimeError(
+            "학습은 GPU 사용을 전제로 설정되어 있지만 PyTorch가 CUDA를 감지하지 못했습니다. "
+            "`CUDA_VISIBLE_DEVICES=2`가 올바른 물리 GPU 번호인지 확인하거나, "
+            "GPU 없이 테스트만 할 경우 REQUIRE_CUDA_FOR_TRAINING=False로 바꾸세요."
+        )
 
 
 def make_env(rank: int = 0) -> gym.Env:
@@ -558,6 +581,7 @@ def train() -> YourAgent:
     set_seed(SEED)
     device = get_device()
     print_device_info(device)
+    require_cuda_if_needed(device)
     print(
         f"Vectorized env: num_envs={NUM_ENVS}, "
         f"type={'AsyncVectorEnv' if USE_ASYNC_VECTOR_ENV else 'SyncVectorEnv'}, "
