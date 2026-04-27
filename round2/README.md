@@ -223,8 +223,8 @@ kym.evaluate(
 - v3의 geometry 기반 보상/feature를 걷어내고, Atari DQN처럼 단순한 flatten observation과 단순 보상으로 되돌린 버전
 - observation은 `mario` 5개 값과 `blurps` 30x6 값을 flatten한 185차원 vector를 normalize해서 사용
 - reward는 생존 보상, `time_elapsed` 증가 보상, 충돌 큰 벌점, 120초 생존 큰 보상만 사용
-- `TOTAL_ENV_STEPS = 3_000_000`은 최대 학습 상한입니다. 120초 생존 episode가 나오면 `avoid_blurp_dqn_v4_candidate.pt`를 먼저 저장합니다.
+- `TOTAL_ENV_STEPS = 100_000_000`은 최대 학습 상한입니다. 120초 생존 episode가 나오면 `avoid_blurp_dqn_v4_candidate.pt`를 먼저 저장합니다.
 - 후보 모델은 epsilon 없이 greedy 평가를 10회 연속 실행하고, 10회 모두 120초를 넘기면 `avoid_blurp_dqn_v4.pt`와 `avoid_blurp_dqn_v4_success.pt`를 저장하고 종료합니다.
 - 검증에 실패하면 우연 가능성이 있다고 보고 학습을 계속합니다.
-- 주기 저장은 `SAVE_EVERY_ENV_STEPS = 250_000`마다 `avoid_blurp_dqn_v4.pt`에 저장
+- 주기 저장은 `SAVE_EVERY_ENV_STEPS = 1_000_000`마다 `avoid_blurp_dqn_v4.pt`에 저장
 - `run()` 함수 포함. `python src/train_v4.py run`으로 `kym.evaluate(...)` 실행 가능
