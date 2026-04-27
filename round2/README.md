@@ -101,11 +101,13 @@ observation은 다음 딕셔너리 형태입니다.
 
 - v1 학습: `python src/train_v1.py`
 - v2 장기 학습: `python src/train_v2.py`
+- v3 geometry 생존 학습: `python src/train_v3.py`
 - 환경 점검: `python scripts/check_env.py`
 - CUDA 점검: `python scripts/check_cuda.py`
 - 환경 점검 체크리스트: `scripts/checklist.md`
 - v1 학습 결과 모델: `avoid_blurp_dqn.pt`
 - v2 학습 결과 모델: `avoid_blurp_dqn_v2.pt`
+- v3 학습 결과 모델: `avoid_blurp_dqn_v3.pt`
 
 v2 학습 중에는 5,000 env step마다 진행 상황이 출력됩니다.
 
@@ -138,9 +140,9 @@ CUDA_VISIBLE_DEVICES=2 python scripts/check_cuda.py
 
 ```python
 import kymnasium as kym
-from src.train_v1 import ENV_ID, YourAgent
+from src.train_v3 import ENV_ID, YourAgent
 
-agent = YourAgent.load("avoid_blurp_dqn.pt")
+agent = YourAgent.load("avoid_blurp_dqn_v3.pt")
 
 kym.evaluate(
     env_id=ENV_ID,
@@ -186,3 +188,18 @@ kym.evaluate(
 - target 계산을 Double DQN 방식으로 변경해 Q-value 과대추정 완화
 - `EPSILON_END = 0.01`로 낮춰 최종 탐험 노이즈 감소
 - 모델 저장 파일명은 `avoid_blurp_dqn_v2.pt`
+
+### v3
+
+- v2의 병렬 학습, Dueling DQN, Double DQN 구조 유지
+- 모델 저장 파일명은 `avoid_blurp_dqn_v3.pt`
+- 마리오와 Blurp의 AABB bounding box 관계를 직접 계산
+- observation을 절대 좌표 중심에서 마리오 기준 geometry feature 중심으로 변경
+- Blurp feature는 `[상대 x, 상대 y, x축 박스 간격, y축 박스 간격, 낙하 속도, touch 위험도]`로 구성
+- Blurp 30개는 마리오와 곧 겹칠 가능성이 큰 순서로 정렬
+- Blurp의 y속도 방향을 반영해 마리오에게 다가오는 물체만 강하게 위험 처리
+- 예를 들어 마리오 아래에 있으면서 더 아래로 내려가는 Blurp는 멀어지는 중이므로 위험도를 낮게 계산
+- reward는 생존 보상과 시간 증가 보상을 유지하되, 박스 간격/충돌 궤적/실제 겹침 위험을 기준으로 패널티 계산
+- `SURVIVAL_REWARD = 0.2`, `TIME_DELTA_REWARD_SCALE = 8.0`
+- `COLLISION_PENALTY = -60.0`, `SUCCESS_REWARD = 500.0`
+- 목적: 단순히 가까운 Blurp를 피하는 것이 아니라 마리오 box와 Blurp box가 닿지 않는 행동을 학습
