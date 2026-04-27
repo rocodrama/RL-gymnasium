@@ -102,6 +102,9 @@ observation은 다음 딕셔너리 형태입니다.
 - v1 학습: `python src/train_v1.py`
 - v2 장기 학습: `python src/train_v2.py`
 - v3 geometry 생존 학습: `python src/train_v3.py`
+- v3 학습 명시 실행: `python src/train_v3.py train`
+- v3 평가 실행: `python src/train_v3.py run`
+- v3 특정 모델 평가 실행: `python src/train_v3.py run avoid_blurp_dqn_v3.pt`
 - 환경 점검: `python scripts/check_env.py`
 - CUDA 점검: `python scripts/check_cuda.py`
 - 환경 점검 체크리스트: `scripts/checklist.md`
@@ -202,4 +205,7 @@ kym.evaluate(
 - reward는 생존 보상과 시간 증가 보상을 유지하되, 박스 간격/충돌 궤적/실제 겹침 위험을 기준으로 패널티 계산
 - `SURVIVAL_REWARD = 0.2`, `TIME_DELTA_REWARD_SCALE = 8.0`
 - `COLLISION_PENALTY = -60.0`, `SUCCESS_REWARD = 500.0`
+- v3 epsilon schedule은 `100k warmup + 50k hold + 800k decay`
+- 빠른 병렬 학습 중 콘솔 출력 병목을 줄이기 위해 `LOG_EVERY_ENV_STEPS = 25_000`
 - 목적: 단순히 가까운 Blurp를 피하는 것이 아니라 마리오 box와 Blurp box가 닿지 않는 행동을 학습
+- `run()` 함수 포함. `python src/train_v3.py run`으로 `kym.evaluate(...)` 실행 가능

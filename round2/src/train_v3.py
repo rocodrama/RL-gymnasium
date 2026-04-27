@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import random
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -69,15 +70,15 @@ MIN_REPLAY_SIZE = 100_000
 
 EPSILON_START = 1.0
 EPSILON_END = 0.01
-EPSILON_HOLD_AFTER_WARMUP_STEPS = 100_000
-EPSILON_DECAY_STEPS = 1_500_000
+EPSILON_HOLD_AFTER_WARMUP_STEPS = 50_000
+EPSILON_DECAY_STEPS = 800_000
 
 HIDDEN_DIM = 256
 UPDATE_STEPS_PER_VECTOR_STEP = 2
 TARGET_UPDATE_EVERY_ENV_STEPS = 20_000
 GRAD_CLIP_NORM = 10.0
 
-LOG_EVERY_ENV_STEPS = 5_000
+LOG_EVERY_ENV_STEPS = 25_000
 SAVE_EVERY_ENV_STEPS = 250_000
 RECENT_EPISODE_WINDOW = 100
 
@@ -881,5 +882,18 @@ def train() -> YourAgent:
         env.close()
 
 
+def run(model_path: str | Path = MODEL_PATH) -> None:
+    """저장된 v3 모델을 불러와 대회 평가 방식으로 실행합니다."""
+    agent = YourAgent.load(model_path)
+    log(f"Loaded agent from: {model_path}")
+    kym.evaluate(
+        env_id=ENV_ID,
+        agent=agent,
+        render_mode="human",
+        bgm=True,
+    )
+
+
 if __name__ == "__main__":
     train()
+    # run()  # 학습된 모델을 대회 평가 방식으로 실행하려면 이 줄의 주석을 해제하세요.
