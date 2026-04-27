@@ -86,7 +86,7 @@ observation은 다음 딕셔너리 형태입니다.
 - `gym.vector.AsyncVectorEnv` 기반 병렬 환경 수집
 - 기본 병렬 환경 수: `NUM_ENVS = 8`
 - v1 기본 batch size: `BATCH_SIZE = 512`
-- v2 기본 batch size: `BATCH_SIZE = 1024`
+- v2 기본 batch size: `BATCH_SIZE = 2048`
 - 학습 중 `CUDA available`, 평균 생존 시간, epsilon, loss 출력
 
 ## 9. Reward Shaping
@@ -110,12 +110,14 @@ observation은 다음 딕셔너리 형태입니다.
 v2 학습 중에는 5,000 env step마다 진행 상황이 출력됩니다.
 
 ```text
-[env_step 00005000] progress=  0.2% state=warmup 5000/100000 explore=warmup episodes=... epsilon=1.000 loss=n/a ...
+[env_step 00005000] progress=  0.2% state=collect 5000/20000 explore=warmup 5000/100000 episodes=... epsilon=1.000 loss=n/a ...
+[env_step 00020000] progress=  0.7% state=training explore=warmup 20000/100000 episodes=... epsilon=1.000 loss=...
 [env_step 000100000] progress=  3.3% state=training explore=hold episodes=... epsilon=1.000 loss=...
 [env_step 000250000] progress=  8.3% state=training explore=decay episodes=... epsilon=0.968 loss=... speed=... env_steps/s elapsed=... eta=...
 ```
 
-`state=warmup`은 replay buffer를 채우는 단계이고, `state=training`부터 실제 DQN 업데이트가 진행됩니다.
+`state=collect`는 DQN 업데이트 전 최소 buffer를 채우는 단계이고, `state=training`부터 실제 DQN 업데이트가 진행됩니다.
+`explore=warmup` 동안에는 학습이 시작되어도 행동은 계속 epsilon 1.0 랜덤 탐험입니다.
 `explore=hold`는 warmup 이후에도 epsilon 1.0을 유지하는 초반 탐험 구간입니다.
 `explore=decay`부터 epsilon이 천천히 감소합니다.
 `eta`는 현재 처리 속도 기준으로 남은 학습 예상 시간입니다.
@@ -169,10 +171,11 @@ kym.evaluate(
 
 - v1 DQN 구조를 유지하되 장기 학습용 하이퍼파라미터로 조정
 - `TOTAL_ENV_STEPS = 3_000_000`
-- `MIN_REPLAY_SIZE = 100_000`으로 초반 replay buffer 다양성 확대
+- `TRAIN_START_SIZE = 20_000`부터 GPU DQN 업데이트 시작
+- `MIN_REPLAY_SIZE = 100_000`까지는 epsilon 1.0 랜덤 탐험 유지
 - warmup 이후 `EPSILON_HOLD_AFTER_WARMUP_STEPS = 100_000` 동안 epsilon 1.0 유지
 - 이후 `EPSILON_DECAY_STEPS = 1_500_000` 동안 epsilon을 `1.0 -> 0.05`로 천천히 감소
-- `BATCH_SIZE = 1024`, `REPLAY_BUFFER_SIZE = 500_000`
+- `BATCH_SIZE = 2048`, `REPLAY_BUFFER_SIZE = 500_000`
 - `LOG_EVERY_ENV_STEPS = 5_000`, `SAVE_EVERY_ENV_STEPS = 250_000`
 - pygame/SDL 그래픽 컨텍스트가 GPU 0번을 잡지 않도록 dummy SDL 설정 적용
 - 모델 저장 파일명은 `avoid_blurp_dqn_v2.pt`

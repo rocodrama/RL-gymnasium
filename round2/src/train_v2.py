@@ -8,6 +8,8 @@ v2 변경점(핵심):
 - warmup과 전체 학습 길이를 장기 학습 기준으로 확대했습니다.
   100k env step 동안은 replay buffer를 충분히 채우고, 이후에도 100k env step 동안 ε=1.0을 유지한 뒤
   천천히 decay합니다.
+- GPU 학습 시작 시점과 epsilon 탐험 warmup을 분리했습니다.
+  20k transition부터 DQN 업데이트는 시작하지만, 행동은 100k까지 계속 ε=1.0 랜덤 탐험을 유지합니다.
 
 프로젝트 루트에서 실행:
     python src/train_v2.py
@@ -47,7 +49,7 @@ OBS_DIM = 5 + 30 * 6
 ACTION_DIM = 3
 TRAIN_RENDER_MODE = None
 TRAIN_BGM = False
-NUM_ENVS = 8
+NUM_ENVS = 16
 USE_ASYNC_VECTOR_ENV = True
 REQUIRE_CUDA_FOR_TRAINING = True
 USE_DUMMY_SDL_FOR_TRAINING = True
@@ -62,8 +64,9 @@ TOTAL_ENV_STEPS = 3_000_000
 
 LEARNING_RATE = 1e-4
 GAMMA = 0.99
-BATCH_SIZE = 1024
+BATCH_SIZE = 2048
 REPLAY_BUFFER_SIZE = 500_000
+TRAIN_START_SIZE = 20_000
 MIN_REPLAY_SIZE = 100_000
 
 EPSILON_START = 1.0
@@ -454,7 +457,8 @@ class TrainingStats:
     elapsed_seconds: float
     env_steps_per_second: float
     eta_seconds: float
-    learning_started: bool
+    can_train: bool
+    exploration_ready: bool
 
 
 def epsilon_by_step(epsilon_step: int) -> float:
@@ -512,7 +516,7 @@ def optimize_model(
     optimizer: optim.Optimizer,
     device: torch.device,
 ) -> float | None:
-    if len(replay_buffer) < max(MIN_REPLAY_SIZE, BATCH_SIZE):
+    if len(replay_buffer) < max(TRAIN_START_SIZE, BATCH_SIZE):
         return None
 
     states, actions, rewards, next_states, dones = replay_buffer.sample(BATCH_SIZE, device)
@@ -541,13 +545,21 @@ def save_policy_network(policy_net: QNetwork, path: str | Path) -> None:
 def log_training(stats: TrainingStats) -> None:
     loss_text = "n/a" if stats.loss is None else f"{stats.loss:.5f}"
     progress = 100.0 * min(1.0, stats.env_steps / TOTAL_ENV_STEPS)
-    learning_state = "training" if stats.learning_started else f"warmup {stats.replay_size}/{MIN_REPLAY_SIZE}"
+    if stats.can_train:
+        learning_state = "training"
+    else:
+        learning_state = f"collect {stats.replay_size}/{TRAIN_START_SIZE}"
+
+    if stats.exploration_ready:
+        exploration_state = stats.exploration_phase
+    else:
+        exploration_state = f"warmup {stats.replay_size}/{MIN_REPLAY_SIZE}"
 
     log(
         f"[env_step {stats.env_steps:08d}] "
         f"progress={progress:5.1f}% "
         f"state={learning_state} "
-        f"explore={stats.exploration_phase} "
+        f"explore={exploration_state} "
         f"episodes={stats.completed_episodes} "
         f"epsilon={stats.epsilon:.3f} "
         f"avg_survival={stats.avg_survival_time:.2f}s "
@@ -574,11 +586,13 @@ def train() -> YourAgent:
     )
     log(
         f"학습 설정: total_env_steps={TOTAL_ENV_STEPS}, "
-        f"batch_size={BATCH_SIZE}, min_replay_size={MIN_REPLAY_SIZE}, "
+        f"batch_size={BATCH_SIZE}, train_start_size={TRAIN_START_SIZE}, "
+        f"exploration_warmup={MIN_REPLAY_SIZE}, "
         f"log_every={LOG_EVERY_ENV_STEPS}"
     )
     log(
-        f"탐험 설정: warmup={MIN_REPLAY_SIZE} env_steps, "
+        f"탐험 설정: 학습은 {TRAIN_START_SIZE} env_steps부터 시작, "
+        f"epsilon warmup={MIN_REPLAY_SIZE} env_steps, "
         f"epsilon_hold_after_warmup={EPSILON_HOLD_AFTER_WARMUP_STEPS}, "
         f"epsilon_decay_steps={EPSILON_DECAY_STEPS}, "
         f"epsilon={EPSILON_START}->{EPSILON_END}"
@@ -617,10 +631,12 @@ def train() -> YourAgent:
         log(f"초기화 완료. state shape={states.shape}. 학습 루프를 시작합니다.")
 
         while env_steps < TOTAL_ENV_STEPS:
-            learning_started = len(replay_buffer) >= max(MIN_REPLAY_SIZE, BATCH_SIZE)
+            can_train = len(replay_buffer) >= max(TRAIN_START_SIZE, BATCH_SIZE)
+            exploration_ready = len(replay_buffer) >= MIN_REPLAY_SIZE
 
-            # v2: warmup 동안에는 epsilon_step을 증가시키지 않아, decay가 warmup에서 소모되지 않도록 함
-            epsilon = epsilon_by_step(epsilon_step if learning_started else 0)
+            # v2: epsilon warmup 동안에는 epsilon_step을 증가시키지 않아,
+            # decay가 탐험 데이터 수집 구간에서 소모되지 않도록 함
+            epsilon = epsilon_by_step(epsilon_step if exploration_ready else 0)
 
             actions = select_actions(env, policy_net, states, epsilon, device)
 
@@ -662,7 +678,7 @@ def train() -> YourAgent:
             previous_times = np.where(dones, 0.0, next_times).astype(np.float32)
             env_steps += NUM_ENVS
 
-            if learning_started:
+            if exploration_ready:
                 epsilon_step += NUM_ENVS
 
             for _ in range(UPDATE_STEPS_PER_VECTOR_STEP):
@@ -681,6 +697,8 @@ def train() -> YourAgent:
                 next_target_update_step += TARGET_UPDATE_EVERY_ENV_STEPS
 
             if env_steps >= next_log_step:
+                log_can_train = len(replay_buffer) >= max(TRAIN_START_SIZE, BATCH_SIZE)
+                log_exploration_ready = len(replay_buffer) >= MIN_REPLAY_SIZE
                 elapsed_seconds = time.perf_counter() - train_started_at
                 env_steps_per_second = env_steps / max(elapsed_seconds, 1e-6)
                 remaining_steps = max(0, TOTAL_ENV_STEPS - env_steps)
@@ -691,8 +709,8 @@ def train() -> YourAgent:
                     TrainingStats(
                         env_steps=env_steps,
                         completed_episodes=completed_episodes,
-                        epsilon=epsilon_by_step(epsilon_step if learning_started else 0),
-                        exploration_phase=exploration_phase(learning_started, epsilon_step),
+                        epsilon=epsilon_by_step(epsilon_step if log_exploration_ready else 0),
+                        exploration_phase=exploration_phase(log_exploration_ready, epsilon_step),
                         avg_survival_time=avg_survival_time,
                         best_survival_time=best_survival_time,
                         loss=last_loss,
@@ -700,7 +718,8 @@ def train() -> YourAgent:
                         elapsed_seconds=elapsed_seconds,
                         env_steps_per_second=env_steps_per_second,
                         eta_seconds=eta_seconds,
-                        learning_started=last_loss is not None,
+                        can_train=log_can_train,
+                        exploration_ready=log_exploration_ready,
                     )
                 )
                 next_log_step += LOG_EVERY_ENV_STEPS
