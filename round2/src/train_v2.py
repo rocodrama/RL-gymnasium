@@ -49,7 +49,7 @@ OBS_DIM = 5 + 30 * 6
 ACTION_DIM = 3
 TRAIN_RENDER_MODE = None
 TRAIN_BGM = False
-NUM_ENVS = 16
+NUM_ENVS = 512
 USE_ASYNC_VECTOR_ENV = True
 REQUIRE_CUDA_FOR_TRAINING = True
 USE_DUMMY_SDL_FOR_TRAINING = True
@@ -70,12 +70,12 @@ TRAIN_START_SIZE = 20_000
 MIN_REPLAY_SIZE = 100_000
 
 EPSILON_START = 1.0
-EPSILON_END = 0.05
+EPSILON_END = 0.01
 EPSILON_HOLD_AFTER_WARMUP_STEPS = 100_000
 EPSILON_DECAY_STEPS = 1_500_000
 
 HIDDEN_DIM = 256
-UPDATE_STEPS_PER_VECTOR_STEP = 1
+UPDATE_STEPS_PER_VECTOR_STEP = 2
 TARGET_UPDATE_EVERY_ENV_STEPS = 20_000
 GRAD_CLIP_NORM = 10.0
 
@@ -101,9 +101,11 @@ FEATURE_CLIP_VALUE = 5.0
 
 SURVIVAL_REWARD = 0.1
 TIME_DELTA_REWARD_SCALE = 1.0
-CLOSE_BLURP_PENALTY_WEIGHT = 0.5
-DANGER_RADIUS = 90.0
-MAX_DANGER_PENALTY = 3.0
+CLOSE_BLURP_PENALTY_WEIGHT = 0.25
+COLLISION_COURSE_PENALTY_WEIGHT = 2.0
+DANGER_RADIUS = 140.0
+HORIZONTAL_DANGER_MARGIN = 45.0
+MAX_DANGER_PENALTY = 5.0
 COLLISION_PENALTY = -10.0
 SUCCESS_REWARD = 100.0
 
@@ -235,8 +237,52 @@ def _extract_mario_blurps(observations: Dict[str, Any]) -> Tuple[np.ndarray, np.
     blurps_copy_size = min(blurps_flat.shape[1], fixed_blurps_flat.shape[1])
     fixed_blurps_flat[:, :blurps_copy_size] = blurps_flat[:, :blurps_copy_size]
     fixed_blurps = fixed_blurps_flat.reshape(batch_size, 30, 6)
+    fixed_blurps = sort_blurps_by_threat(fixed_mario, fixed_blurps)
 
     return fixed_mario, fixed_blurps
+
+
+def sort_blurps_by_threat(mario: np.ndarray, blurps: np.ndarray) -> np.ndarray:
+    # observation 차원은 그대로 유지하되, 30개 Blurp 행의 순서를 위험도 기준으로 정렬합니다.
+    # 가장 위험한 Blurp가 항상 앞쪽 feature에 오면 MLP가 "무엇을 먼저 피해야 하는지" 배우기 쉬워집니다.
+    visible = ~np.all(np.isclose(blurps, 0.0), axis=2)
+
+    mario_left = mario[:, 0:1]
+    mario_top = mario[:, 1:2]
+    mario_right = mario[:, 2:3]
+    mario_bottom = mario[:, 3:4]
+    mario_x = (mario_left + mario_right) * 0.5
+    mario_y = (mario_top + mario_bottom) * 0.5
+    mario_half_width = np.maximum((mario_right - mario_left) * 0.5, 1.0)
+
+    blurp_left = blurps[:, :, 0]
+    blurp_top = blurps[:, :, 1]
+    blurp_right = blurps[:, :, 2]
+    blurp_bottom = blurps[:, :, 3]
+    blurp_velocity = np.abs(blurps[:, :, 4])
+
+    blurp_x = (blurp_left + blurp_right) * 0.5
+    blurp_y = (blurp_top + blurp_bottom) * 0.5
+    blurp_half_width = np.maximum((blurp_right - blurp_left) * 0.5, 1.0)
+
+    horizontal_gap = np.maximum(
+        np.abs(blurp_x - mario_x) - mario_half_width - blurp_half_width,
+        0.0,
+    )
+    vertical_gap = np.maximum(mario_top - blurp_bottom, 0.0)
+    distance = np.hypot(blurp_x - mario_x, blurp_y - mario_y)
+
+    horizontal_score = 1.0 / (1.0 + horizontal_gap / HORIZONTAL_DANGER_MARGIN)
+    falling_score = 1.0 / (1.0 + vertical_gap / (blurp_velocity + 1.0))
+    near_score = 1.0 / (1.0 + distance / DANGER_RADIUS)
+    above_weight = np.where(blurp_y <= mario_y + 30.0, 1.0, 0.35)
+
+    threat = visible.astype(np.float32) * (
+        2.0 * horizontal_score * falling_score * above_weight + near_score
+    )
+    order = np.argsort(-threat, axis=1)
+    batch_indices = np.arange(blurps.shape[0])[:, None]
+    return blurps[batch_indices, order]
 
 
 def preprocess_observations(observations: Dict[str, Any]) -> np.ndarray:
@@ -315,16 +361,40 @@ def _final_info_time(infos: Dict[str, Any], env_index: int, fallback: float) -> 
 def close_blurp_penalties(observations: Dict[str, Any]) -> np.ndarray:
     mario, blurps = _extract_mario_blurps(observations)
 
+    mario_left = mario[:, 0]
+    mario_top = mario[:, 1]
+    mario_right = mario[:, 2]
+    mario_bottom = mario[:, 3]
     mario_x = (mario[:, 0] + mario[:, 2]) * 0.5
     mario_y = (mario[:, 1] + mario[:, 3]) * 0.5
+    mario_half_width = np.maximum((mario_right - mario_left) * 0.5, 1.0)
+
     blurp_x = (blurps[:, :, 0] + blurps[:, :, 2]) * 0.5
     blurp_y = (blurps[:, :, 1] + blurps[:, :, 3]) * 0.5
+    blurp_half_width = np.maximum((blurps[:, :, 2] - blurps[:, :, 0]) * 0.5, 1.0)
+    blurp_velocity = np.abs(blurps[:, :, 4])
 
     distances = np.hypot(mario_x[:, None] - blurp_x, mario_y[:, None] - blurp_y)
     visible = ~np.all(np.isclose(blurps, 0.0), axis=2)
-    danger = visible & (distances < DANGER_RADIUS)
-    raw_penalties = CLOSE_BLURP_PENALTY_WEIGHT * (1.0 - distances / DANGER_RADIUS)
-    penalties = np.where(danger, raw_penalties, 0.0).sum(axis=1)
+
+    # 가까운 물체 자체도 위험하지만, 실제로는 "마리오 위쪽에서 같은 x축 라인으로 떨어지는 물체"가 더 위험합니다.
+    close_danger = visible & (distances < DANGER_RADIUS)
+    close_penalties = CLOSE_BLURP_PENALTY_WEIGHT * (1.0 - distances / DANGER_RADIUS)
+
+    horizontal_gap = np.maximum(
+        np.abs(blurp_x - mario_x[:, None]) - mario_half_width[:, None] - blurp_half_width,
+        0.0,
+    )
+    vertical_gap = np.maximum(mario_top[:, None] - blurps[:, :, 3], 0.0)
+    collision_lane = horizontal_gap < HORIZONTAL_DANGER_MARGIN
+    above_or_near = blurp_y <= (mario_bottom[:, None] + 30.0)
+    impact_score = 1.0 / (1.0 + vertical_gap / (blurp_velocity + 1.0))
+    lane_score = 1.0 - np.clip(horizontal_gap / HORIZONTAL_DANGER_MARGIN, 0.0, 1.0)
+    course_penalties = COLLISION_COURSE_PENALTY_WEIGHT * impact_score * lane_score
+    course_danger = visible & collision_lane & above_or_near
+
+    penalties = np.where(close_danger, close_penalties, 0.0).sum(axis=1)
+    penalties += np.where(course_danger, course_penalties, 0.0).sum(axis=1)
 
     return np.minimum(penalties, MAX_DANGER_PENALTY).astype(np.float32)
 
@@ -383,16 +453,28 @@ class QNetwork(nn.Module):
         hidden_dim: int = HIDDEN_DIM,
     ) -> None:
         super().__init__()
-        self.net = nn.Sequential(
+        self.feature = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
+        )
+        self.value_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1),
+        )
+        self.advantage_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, action_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        features = self.feature(x)
+        value = self.value_head(features)
+        advantages = self.advantage_head(features)
+        return value + advantages - advantages.mean(dim=1, keepdim=True)
 
 
 class YourAgent(kym.Agent):
@@ -523,7 +605,10 @@ def optimize_model(
     current_q_values = policy_net(states).gather(1, actions).squeeze(1)
 
     with torch.no_grad():
-        next_q_values = target_net(next_states).max(dim=1).values
+        # Double DQN: 다음 행동 선택은 policy_net으로, 그 행동의 평가는 target_net으로 합니다.
+        # 이렇게 하면 일반 DQN의 Q-value 과대추정을 줄여 긴 생존 정책이 더 안정적으로 학습됩니다.
+        next_actions = policy_net(next_states).argmax(dim=1, keepdim=True)
+        next_q_values = target_net(next_states).gather(1, next_actions).squeeze(1)
         target_q_values = rewards + GAMMA * (1.0 - dones) * next_q_values
 
     loss = F.smooth_l1_loss(current_q_values, target_q_values)

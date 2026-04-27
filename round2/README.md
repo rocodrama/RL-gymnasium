@@ -178,4 +178,9 @@ kym.evaluate(
 - `BATCH_SIZE = 2048`, `REPLAY_BUFFER_SIZE = 500_000`
 - `LOG_EVERY_ENV_STEPS = 5_000`, `SAVE_EVERY_ENV_STEPS = 250_000`
 - pygame/SDL 그래픽 컨텍스트가 GPU 0번을 잡지 않도록 dummy SDL 설정 적용
+- Blurp 30개를 위험도 기준으로 정렬해 가장 위험한 물체가 앞쪽 feature에 오도록 전처리
+- 단순 거리 패널티에 더해 마리오 위쪽 같은 x축 라인으로 떨어지는 Blurp에 충돌 궤적 패널티 적용
+- Q-network를 Dueling DQN 구조로 변경
+- target 계산을 Double DQN 방식으로 변경해 Q-value 과대추정 완화
+- `EPSILON_END = 0.01`로 낮춰 최종 탐험 노이즈 감소
 - 모델 저장 파일명은 `avoid_blurp_dqn_v2.pt`
