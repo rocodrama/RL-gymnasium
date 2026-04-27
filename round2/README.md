@@ -104,6 +104,16 @@ observation은 다음 딕셔너리 형태입니다.
 - 환경 점검 체크리스트: `scripts/checklist.md`
 - 학습 결과 모델: `avoid_blurp_dqn.pt`
 
+학습 중에는 1,000 env step마다 진행 상황이 출력됩니다.
+
+```text
+[env_step 00001000] progress=  0.1% state=warmup 1000/10000 episodes=... epsilon=... loss=n/a ... elapsed=12s eta=3h 20m 00s
+[env_step 00010000] progress=  1.0% state=training episodes=... epsilon=... loss=... speed=... env_steps/s elapsed=2m 03s eta=3h 15m 20s
+```
+
+`state=warmup`은 replay buffer를 채우는 단계이고, `state=training`부터 실제 DQN 업데이트가 진행됩니다.
+`eta`는 현재 처리 속도 기준으로 남은 학습 예상 시간입니다.
+
 CUDA가 보이지 않을 때는 먼저 아래를 확인합니다.
 
 ```bash

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import random
 import os
+import time
 from collections import deque
 from dataclasses import dataclass
 from functools import partial
@@ -65,7 +66,7 @@ UPDATE_STEPS_PER_VECTOR_STEP = 1
 TARGET_UPDATE_EVERY_ENV_STEPS = 8_000
 GRAD_CLIP_NORM = 10.0
 
-LOG_EVERY_ENV_STEPS = 10_000
+LOG_EVERY_ENV_STEPS = 1_000
 SAVE_EVERY_ENV_STEPS = 100_000
 RECENT_EPISODE_WINDOW = 50
 
@@ -107,6 +108,22 @@ SUCCESS_REWARD = 100.0
 Transition = Tuple[np.ndarray, int, float, np.ndarray, bool]
 
 
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    if hours > 0:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    if minutes > 0:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
+
+
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -124,13 +141,13 @@ def print_device_info(device: torch.device) -> None:
     device_name = torch.cuda.get_device_name(0) if cuda_available else "CPU"
     visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "<not set>")
 
-    print(f"Python executable: {os.sys.executable}")
-    print(f"PyTorch version: {torch.__version__}")
-    print(f"PyTorch CUDA build: {torch.version.cuda}")
-    print(f"CUDA_VISIBLE_DEVICES: {visible_devices}")
-    print(f"CUDA available: {cuda_available}")
-    print(f"CUDA device count: {torch.cuda.device_count()}")
-    print(f"PyTorch device: {device} ({device_name})")
+    log(f"Python executable: {os.sys.executable}")
+    log(f"PyTorch version: {torch.__version__}")
+    log(f"PyTorch CUDA build: {torch.version.cuda}")
+    log(f"CUDA_VISIBLE_DEVICES: {visible_devices}")
+    log(f"CUDA available: {cuda_available}")
+    log(f"CUDA device count: {torch.cuda.device_count()}")
+    log(f"PyTorch device: {device} ({device_name})")
 
     if cuda_available:
         try:
@@ -138,7 +155,7 @@ def print_device_info(device: torch.device) -> None:
         except Exception:
             pass
     else:
-        print(
+        log(
             "CUDA가 보이지 않습니다. CUDA_VISIBLE_DEVICES 값이 실제 GPU 번호와 맞는지, "
             "`nvidia-smi -L`과 `python scripts/check_cuda.py`로 확인하세요."
         )
@@ -483,6 +500,10 @@ class TrainingStats:
     best_survival_time: float
     loss: float | None
     replay_size: int
+    elapsed_seconds: float
+    env_steps_per_second: float
+    eta_seconds: float
+    learning_started: bool
 
 
 def epsilon_by_step(env_step: int) -> float:
@@ -566,14 +587,25 @@ def save_policy_network(policy_net: QNetwork, path: str | Path) -> None:
 
 def log_training(stats: TrainingStats) -> None:
     loss_text = "n/a" if stats.loss is None else f"{stats.loss:.5f}"
-    print(
+    progress = 100.0 * min(1.0, stats.env_steps / TOTAL_ENV_STEPS)
+    learning_state = (
+        "training"
+        if stats.learning_started
+        else f"warmup {stats.replay_size}/{MIN_REPLAY_SIZE}"
+    )
+    log(
         f"[env_step {stats.env_steps:08d}] "
+        f"progress={progress:5.1f}% "
+        f"state={learning_state} "
         f"episodes={stats.completed_episodes} "
         f"epsilon={stats.epsilon:.3f} "
         f"avg_survival={stats.avg_survival_time:.2f}s "
         f"best={stats.best_survival_time:.2f}s "
         f"loss={loss_text} "
-        f"buffer={stats.replay_size}"
+        f"buffer={stats.replay_size} "
+        f"speed={stats.env_steps_per_second:.1f} env_steps/s "
+        f"elapsed={format_duration(stats.elapsed_seconds)} "
+        f"eta={format_duration(stats.eta_seconds)}"
     )
 
 
@@ -582,13 +614,20 @@ def train() -> YourAgent:
     device = get_device()
     print_device_info(device)
     require_cuda_if_needed(device)
-    print(
+    log(
         f"Vectorized env: num_envs={NUM_ENVS}, "
         f"type={'AsyncVectorEnv' if USE_ASYNC_VECTOR_ENV else 'SyncVectorEnv'}, "
         f"render_mode={TRAIN_RENDER_MODE}, bgm={TRAIN_BGM}"
     )
+    log(
+        f"학습 설정: total_env_steps={TOTAL_ENV_STEPS}, "
+        f"batch_size={BATCH_SIZE}, min_replay_size={MIN_REPLAY_SIZE}, "
+        f"log_every={LOG_EVERY_ENV_STEPS}"
+    )
 
+    log("Vectorized env 생성 중...")
     env = make_vector_env(NUM_ENVS)
+    log("Vectorized env 생성 완료. 네트워크와 리플레이 버퍼를 준비합니다.")
 
     policy_net = QNetwork().to(device)
     target_net = QNetwork().to(device)
@@ -606,11 +645,14 @@ def train() -> YourAgent:
     next_log_step = LOG_EVERY_ENV_STEPS
     next_save_step = SAVE_EVERY_ENV_STEPS
     next_target_update_step = TARGET_UPDATE_EVERY_ENV_STEPS
+    train_started_at = time.perf_counter()
 
     try:
+        log("환경 reset 및 초기 observation 전처리 중...")
         observations, infos = env.reset(seed=SEED)
         states = preprocess_observations(observations)
         previous_times = _vector_info_array(infos, "time_elapsed", NUM_ENVS, 0.0)
+        log(f"초기화 완료. state shape={states.shape}. 학습 루프를 시작합니다.")
 
         while env_steps < TOTAL_ENV_STEPS:
             epsilon = epsilon_by_step(env_steps)
@@ -674,6 +716,10 @@ def train() -> YourAgent:
                 next_target_update_step += TARGET_UPDATE_EVERY_ENV_STEPS
 
             if env_steps >= next_log_step:
+                elapsed_seconds = time.perf_counter() - train_started_at
+                env_steps_per_second = env_steps / max(elapsed_seconds, 1e-6)
+                remaining_steps = max(0, TOTAL_ENV_STEPS - env_steps)
+                eta_seconds = remaining_steps / max(env_steps_per_second, 1e-6)
                 avg_survival_time = (
                     float(np.mean(recent_survival_times))
                     if recent_survival_times
@@ -688,16 +734,21 @@ def train() -> YourAgent:
                         best_survival_time=best_survival_time,
                         loss=last_loss,
                         replay_size=len(replay_buffer),
+                        elapsed_seconds=elapsed_seconds,
+                        env_steps_per_second=env_steps_per_second,
+                        eta_seconds=eta_seconds,
+                        learning_started=last_loss is not None,
                     )
                 )
                 next_log_step += LOG_EVERY_ENV_STEPS
 
             if env_steps >= next_save_step:
                 save_policy_network(policy_net, MODEL_PATH)
+                log(f"중간 모델 저장 완료: {MODEL_PATH} (env_step={env_steps})")
                 next_save_step += SAVE_EVERY_ENV_STEPS
 
         save_policy_network(policy_net, MODEL_PATH)
-        print(f"Training complete. Saved model to: {MODEL_PATH}")
+        log(f"Training complete. Saved model to: {MODEL_PATH}")
         return YourAgent.load(MODEL_PATH)
     finally:
         env.close()
