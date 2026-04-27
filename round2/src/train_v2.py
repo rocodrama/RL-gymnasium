@@ -5,6 +5,9 @@ v2 변경점(핵심):
 - 탐험(ε) decay를 env_step=0부터 소모하지 않고, warmup(리플레이 버퍼가 MIN_REPLAY_SIZE에 도달) 이후부터
   본격적으로 decay가 시작되도록 조정했습니다.
   즉 warmup 구간에서는 ε=EPSILON_START를 유지해 "초반 탐험"을 확실히 보장합니다.
+- warmup과 전체 학습 길이를 장기 학습 기준으로 확대했습니다.
+  100k env step 동안은 replay buffer를 충분히 채우고, 이후에도 100k env step 동안 ε=1.0을 유지한 뒤
+  천천히 decay합니다.
 
 프로젝트 루트에서 실행:
     python src/train_v2.py
@@ -47,6 +50,7 @@ TRAIN_BGM = False
 NUM_ENVS = 8
 USE_ASYNC_VECTOR_ENV = True
 REQUIRE_CUDA_FOR_TRAINING = True
+USE_DUMMY_SDL_FOR_TRAINING = True
 
 
 # ===============
@@ -54,26 +58,27 @@ REQUIRE_CUDA_FOR_TRAINING = True
 # ===============
 
 SEED = 42
-TOTAL_ENV_STEPS = 1_000_000
+TOTAL_ENV_STEPS = 3_000_000
 
 LEARNING_RATE = 1e-4
 GAMMA = 0.99
-BATCH_SIZE = 512
-REPLAY_BUFFER_SIZE = 250_000
-MIN_REPLAY_SIZE = 10_000
+BATCH_SIZE = 1024
+REPLAY_BUFFER_SIZE = 500_000
+MIN_REPLAY_SIZE = 100_000
 
 EPSILON_START = 1.0
 EPSILON_END = 0.05
-EPSILON_DECAY_STEPS = 250_000
+EPSILON_HOLD_AFTER_WARMUP_STEPS = 100_000
+EPSILON_DECAY_STEPS = 1_500_000
 
 HIDDEN_DIM = 256
 UPDATE_STEPS_PER_VECTOR_STEP = 1
-TARGET_UPDATE_EVERY_ENV_STEPS = 8_000
+TARGET_UPDATE_EVERY_ENV_STEPS = 20_000
 GRAD_CLIP_NORM = 10.0
 
-LOG_EVERY_ENV_STEPS = 1_000
-SAVE_EVERY_ENV_STEPS = 100_000
-RECENT_EPISODE_WINDOW = 50
+LOG_EVERY_ENV_STEPS = 5_000
+SAVE_EVERY_ENV_STEPS = 250_000
+RECENT_EPISODE_WINDOW = 100
 
 
 # ========================
@@ -165,7 +170,20 @@ def require_cuda_if_needed(device: torch.device) -> None:
         )
 
 
+def configure_headless_sdl() -> None:
+    if not USE_DUMMY_SDL_FOR_TRAINING:
+        return
+
+    # CUDA_VISIBLE_DEVICES는 CUDA 연산에만 영향을 줍니다.
+    # pygame/SDL이 Xorg 또는 OpenGL 컨텍스트를 만들면 디스플레이가 붙은 GPU 0번에
+    # 작은 Type G 프로세스가 생길 수 있으므로, 학습용 env worker에서는 dummy driver를 사용합니다.
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+
+
 def make_env(rank: int = 0) -> gym.Env:
+    configure_headless_sdl()
     env = gym.make(
         id=ENV_ID,
         render_mode=TRAIN_RENDER_MODE,
@@ -428,6 +446,7 @@ class TrainingStats:
     env_steps: int
     completed_episodes: int
     epsilon: float
+    exploration_phase: str
     avg_survival_time: float
     best_survival_time: float
     loss: float | None
@@ -442,9 +461,24 @@ def epsilon_by_step(epsilon_step: int) -> float:
     """epsilon_step 기준으로 epsilon을 계산합니다.
 
     v2에서는 epsilon_step이 '학습(warmup 이후)부터의 누적 env_step'이 되도록 구성합니다.
+    warmup 이후에도 EPSILON_HOLD_AFTER_WARMUP_STEPS 동안은 epsilon=1.0을 유지합니다.
     """
-    decay_ratio = min(1.0, epsilon_step / EPSILON_DECAY_STEPS)
+    if epsilon_step <= EPSILON_HOLD_AFTER_WARMUP_STEPS:
+        return EPSILON_START
+
+    decay_step = epsilon_step - EPSILON_HOLD_AFTER_WARMUP_STEPS
+    decay_ratio = min(1.0, decay_step / EPSILON_DECAY_STEPS)
     return EPSILON_START + decay_ratio * (EPSILON_END - EPSILON_START)
+
+
+def exploration_phase(learning_started: bool, epsilon_step: int) -> str:
+    if not learning_started:
+        return "warmup"
+    if epsilon_step <= EPSILON_HOLD_AFTER_WARMUP_STEPS:
+        return "hold"
+    if epsilon_step < EPSILON_HOLD_AFTER_WARMUP_STEPS + EPSILON_DECAY_STEPS:
+        return "decay"
+    return "final"
 
 
 def select_actions(
@@ -513,6 +547,7 @@ def log_training(stats: TrainingStats) -> None:
         f"[env_step {stats.env_steps:08d}] "
         f"progress={progress:5.1f}% "
         f"state={learning_state} "
+        f"explore={stats.exploration_phase} "
         f"episodes={stats.completed_episodes} "
         f"epsilon={stats.epsilon:.3f} "
         f"avg_survival={stats.avg_survival_time:.2f}s "
@@ -534,12 +569,19 @@ def train() -> YourAgent:
     log(
         f"Vectorized env: num_envs={NUM_ENVS}, "
         f"type={'AsyncVectorEnv' if USE_ASYNC_VECTOR_ENV else 'SyncVectorEnv'}, "
-        f"render_mode={TRAIN_RENDER_MODE}, bgm={TRAIN_BGM}"
+        f"render_mode={TRAIN_RENDER_MODE}, bgm={TRAIN_BGM}, "
+        f"dummy_sdl={USE_DUMMY_SDL_FOR_TRAINING}"
     )
     log(
         f"학습 설정: total_env_steps={TOTAL_ENV_STEPS}, "
         f"batch_size={BATCH_SIZE}, min_replay_size={MIN_REPLAY_SIZE}, "
         f"log_every={LOG_EVERY_ENV_STEPS}"
+    )
+    log(
+        f"탐험 설정: warmup={MIN_REPLAY_SIZE} env_steps, "
+        f"epsilon_hold_after_warmup={EPSILON_HOLD_AFTER_WARMUP_STEPS}, "
+        f"epsilon_decay_steps={EPSILON_DECAY_STEPS}, "
+        f"epsilon={EPSILON_START}->{EPSILON_END}"
     )
 
     log("Vectorized env 생성 중...")
@@ -650,6 +692,7 @@ def train() -> YourAgent:
                         env_steps=env_steps,
                         completed_episodes=completed_episodes,
                         epsilon=epsilon_by_step(epsilon_step if learning_started else 0),
+                        exploration_phase=exploration_phase(learning_started, epsilon_step),
                         avg_survival_time=avg_survival_time,
                         best_survival_time=best_survival_time,
                         loss=last_loss,
