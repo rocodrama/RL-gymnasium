@@ -49,7 +49,9 @@ OBS_DIM = 5 + 30 * 6
 ACTION_DIM = 3
 TRAIN_RENDER_MODE = None
 TRAIN_BGM = False
-NUM_ENVS = 512
+# 512개 이상은 OS의 open files 제한(ulimit -n)에 걸릴 수 있습니다.
+# 256은 현재 서버에서 속도와 안정성 균형이 좋은 기본값입니다.
+NUM_ENVS = 256
 USE_ASYNC_VECTOR_ENV = True
 REQUIRE_CUDA_FOR_TRAINING = True
 USE_DUMMY_SDL_FOR_TRAINING = True
@@ -99,15 +101,17 @@ FEATURE_CLIP_VALUE = 5.0
 # 보상 설계 설정값
 # ======================
 
-SURVIVAL_REWARD = 0.1
-TIME_DELTA_REWARD_SCALE = 1.0
-CLOSE_BLURP_PENALTY_WEIGHT = 0.25
-COLLISION_COURSE_PENALTY_WEIGHT = 2.0
+# 생존이 최우선 목표이므로 reward의 중심은 "얼마나 오래 살아남았는가"에 둡니다.
+# 위험 Blurp 패널티는 행동 힌트로만 약하게 주고, 충돌/2분 성공 보상으로 목표를 명확히 합니다.
+SURVIVAL_REWARD = 0.2
+TIME_DELTA_REWARD_SCALE = 5.0
+CLOSE_BLURP_PENALTY_WEIGHT = 0.05
+COLLISION_COURSE_PENALTY_WEIGHT = 0.5
 DANGER_RADIUS = 140.0
 HORIZONTAL_DANGER_MARGIN = 45.0
-MAX_DANGER_PENALTY = 5.0
-COLLISION_PENALTY = -10.0
-SUCCESS_REWARD = 100.0
+MAX_DANGER_PENALTY = 1.0
+COLLISION_PENALTY = -30.0
+SUCCESS_REWARD = 300.0
 
 
 Transition = Tuple[np.ndarray, int, float, np.ndarray, bool]

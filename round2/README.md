@@ -179,7 +179,9 @@ kym.evaluate(
 - `LOG_EVERY_ENV_STEPS = 5_000`, `SAVE_EVERY_ENV_STEPS = 250_000`
 - pygame/SDL 그래픽 컨텍스트가 GPU 0번을 잡지 않도록 dummy SDL 설정 적용
 - Blurp 30개를 위험도 기준으로 정렬해 가장 위험한 물체가 앞쪽 feature에 오도록 전처리
-- 단순 거리 패널티에 더해 마리오 위쪽 같은 x축 라인으로 떨어지는 Blurp에 충돌 궤적 패널티 적용
+- 생존 시간 보상을 크게 올리고 위험 패널티는 약하게 낮춘 생존 중심 reward shaping 적용
+- 충돌 벌점과 2분 생존 성공 보상을 크게 올려 목표를 명확히 설정
+- 단순 거리 패널티에 더해 마리오 위쪽 같은 x축 라인으로 떨어지는 Blurp에 약한 충돌 궤적 패널티 적용
 - Q-network를 Dueling DQN 구조로 변경
 - target 계산을 Double DQN 방식으로 변경해 Q-value 과대추정 완화
 - `EPSILON_END = 0.01`로 낮춰 최종 탐험 노이즈 감소
