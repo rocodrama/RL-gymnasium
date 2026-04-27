@@ -136,5 +136,34 @@ v1 구조는 유지하고 reward를 단순화한 버전입니다.
 avoid_blurp_dqn_v2.pt
 ```
 
+### v3 - Raw Flatten Normalize DQN
+
+파일: `src/train_v3.py`
+
+v2의 단순 생존 reward는 유지하고, state preprocessing을 더 단순화한 버전입니다.
+
+- Mario raw feature 5개 사용
+- Blurp raw feature `30 * 7 = 210`개 사용
+- 최종 state dimension: `215`
+- 물리 예측 feature 제거
+- risk score/top-k 선택 제거
+- 좌표와 속도만 간단히 normalize 후 flatten
+  - x 좌표: `/ 256`
+  - y 좌표: `/ 240`
+  - Mario `vx`: `/ 12`
+  - Blurp `vx`: `/ 12`
+  - Blurp `vy`: `/ 18`
+  - Blurp `ay`: `/ 2`
+- reward는 v2와 동일:
+  - 매 step 생존 보상: `+0.02`
+  - 충돌 실패: `-1000`
+  - 120초 생존 성공: `+1000`
+
+저장 파일:
+
+```text
+avoid_blurp_dqn_v3.pt
+```
+
 v2는 "살아 있으면 조금 좋고, 충돌하면 매우 나쁘고, 120초 생존하면 매우 좋다"는
 목표를 더 직접적으로 전달하기 위한 실험 버전입니다.
